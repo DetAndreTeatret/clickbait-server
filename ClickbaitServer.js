@@ -3,33 +3,36 @@ const sharp = require('sharp')
 const http = require('http')
 const path = require('path')
 const fs = require('fs')
+const uuid = require('crypto')
 
-//send queries to the qlab instance
-
-const oscDestination = '127.0.0.1'
+const oscDestinationIP = '127.0.0.1'
 const oscDestinationPort = 53000
 
 const httpReceivePort = 1103
 
-const slideshowDelay = 10*1000 //Time between each new picture/title combination
+const slideshowDelay = 10*1000 //Time between each new picture/title combination (in ms)
 
 let slideshowRunning = false
 
 //Ikke se her beklager
 let pictureCuesOccupied = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
 
+//IMPORTANT CUE NUMBERS
+const inShowPictureCue = 5
+const dynamicTitleCue = 2
+const backgroundGraphicCue = 3
 
+const preShowPictureCueOffset = 100
+const preShowTitleCueOffset = 200
 
 function initApp() {
+    console.log("Starting ClickbaitServer...")
     //Check Qlab response for active?
     //Start background graphic
-    activateOrDeactiveQue(3, true)
+    activateOrDeactiveQue(backgroundGraphicCue, true)
     //Populate title queues and choices size
     populateTitleChoices()
 }
-
-initApp()
-
 
 
 //------OSC PART, COMMUNICATES WITH QLAB--------//
@@ -44,7 +47,8 @@ const oscPort = new osc.UDPPort({
 });
 
 oscPort.on("ready", () => {
-    console.log("OSC ready")
+    console.log("OSC server ready")
+    initApp()
 })
 
 oscPort.on('error', console.error)
@@ -54,11 +58,11 @@ oscPort.open()
 //PICTURES IN QLAB
 
 function calculatePictureCueOffset(pictureNumber) {
-    return 100 + pictureNumber + 1
+    return preShowPictureCueOffset + (pictureNumber + 1) //Anti zero index
 }
 
 function calculateTitleCueOffset(titleNumber) {
-    return 200 + titleNumber + 1
+    return preShowTitleCueOffset + (titleNumber + 1) //Anti zero index
 }
 
 function addPicturePreShow (pictureFilePath) {
@@ -85,11 +89,11 @@ function deleteAllPicturesPreShow() {
 }
 
 function setPictureInShow (pictureFilePath) {
-    sendOscToQLab(5, 'fileTarget', pictureFilePath)
+    sendOscToQLab(inShowPictureCue, 'fileTarget', pictureFilePath)
 }
 
 function deletePictureInShow() {
-    sendOscToQLab(5, 'fileTarget', "nothing")
+    sendOscToQLab(inShowPictureCue, 'fileTarget', "nothing")
 }
 
 
@@ -107,6 +111,9 @@ let usedPictures = []
 let usedTitles = []
 
 function startSlideshow() {
+    if(slideshowRunning === true) {
+        return;
+    }
     slideshowRunning = true
     populateTitleChoices().then(() => tickSlideshow)
 }
@@ -162,12 +169,12 @@ function sendOscToQLab(cue, command, arg) {
             type: 's',
             value: arg
         }]
-    }, oscDestination, oscDestinationPort)
+    }, oscDestinationIP, oscDestinationPort)
 }
 
 
 async function populateTitleChoices() {
-    let dirpath = path.join(__dirname, "resources", "titles")
+    let dirpath = path.join(__dirname, "resources/titles")
     fs.readdir(dirpath, function (err, files) {
         if(err) {
             console.error("Unable to read directory with TITLES from pre show. " + err)
@@ -191,37 +198,41 @@ async function populateTitleChoices() {
 const server = http.createServer(function (req, res) {
 
     if (req.url === '/deletepictures') {
+        stopSlideshow()
         deleteAllPicturesPreShow() //Pre show pictures
     }
 
     if (req.url === '/deletepictureandtitle') {
-        sendOscToQLab(2, 'text', " ") //Removes title
+        sendOscToQLab(dynamicTitleCue, 'text', " ") //Removes title
         deletePictureInShow()
     }
 
     if (req.url === '/postpicturepre') {
+        startSlideshow()
         let pict = Buffer.alloc(0)
         req.on('data', function (chunk) {
             pict = Buffer.concat([pict, chunk])
         })
-        let pictureName;
+        let pictureName = uuid.randomUUID() + ".jpg"
         req.on(('end'), () => sharp(pict).flip(true).flop(true).toFile(pictureName, console.log))
-        addPicturePreShow(path.join(__dirname, "resources/picturespreshow/" + pictureName))
+        addPicturePreShow(path.join(__dirname, pictureName))
     }
 
     if(req.url === '/postpicturein') {
+        activateOrDeactiveQue(inShowPictureCue, false)
+        setPictureInShow(path.join(__dirname, "resources/picturesinshow/inshowpic.jpg"))
+        fs.rm(path.join(__dirname, "resources/picturesinshow/inshowpic.jpg"), () => {})
         let pict = Buffer.alloc(0)
         req.on('data', function (chunk) {
             pict = Buffer.concat([pict, chunk])
         })
-        req.on(('end'), () => sharp(pict).flip(true).flop(true).toFile('inshowpic.jpg', console.log))
-        setPictureInShow(path.join(__dirname, "resources/picturesinshow/inshowpic.jpg"))
+        req.on(('end'), () => sharp(pict).flip(true).flop(true).toFile('inshowpic.jpg', console.log).then(() => activateOrDeactiveQue(inShowPictureCue, true)))
     }
 
     if (req.url === '/posttitle') {
         req.setEncoding('utf8')
         req.on('data', function (body) {
-            sendOscToQLab(2, 'text', body)
+            sendOscToQLab(dynamicTitleCue, 'text', body)
         })
 
     }
@@ -235,7 +246,7 @@ const server = http.createServer(function (req, res) {
 server.listen(httpReceivePort)
 
 server.on('listening', function () {
-    console.log("http server is listening on port " + httpReceivePort)
+    console.log("HTTP server is listening on port " + httpReceivePort)
 })
 
 server.on('error', console.error)
