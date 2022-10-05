@@ -2,4 +2,8 @@ node_modules/
 .idea
 .DS_Store
 package-lock.json
-resources/
+
+
+resources/picturesinshow/*
+resources/picturespreshow/*
+resources/titles/*
