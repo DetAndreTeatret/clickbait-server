@@ -30,6 +30,8 @@ function initApp() {
     //Check Qlab response for active?
     //Start background graphic
     activateOrDeactiveQue(backgroundGraphicCue, true)
+    sendOscToQLab(dynamicTitleCue, "text", " ")
+    activateOrDeactiveQue(dynamicTitleCue, true)
     //Populate title queues and choices size
     populateTitleChoices()
 }
@@ -41,17 +43,30 @@ function initApp() {
 //SETUP OSC
 
 const oscPort = new osc.UDPPort({
-    localAddress: "0.0.0.0",
+    localAddress: "127.0.0.1",
     localPort: 53001,
     metadata: true
 });
 
-oscPort.on("ready", () => {
-    console.log("OSC server ready")
-    initApp()
-})
+// Listen for incoming OSC messages.
+oscPort.on("message", function (oscMsg, timeTag, info) {
+    console.log("An OSC message just arrived!", oscMsg);
+    console.log("Remote info is: ", info);
+});
 
 oscPort.on('error', console.error)
+
+oscPort.on("ready", () => {
+    console.log("OSC server ready")
+    oscPort.send({
+        address: '/alwaysReply',
+        args: [{
+         type:'f',
+         value: 1
+        }]
+    }, oscDestinationIP, oscDestinationPort)
+    initApp()
+})
 
 oscPort.open()
 
@@ -93,7 +108,9 @@ function setPictureInShow (pictureFilePath) {
 }
 
 function deletePictureInShow() {
-    sendOscToQLab(inShowPictureCue, 'fileTarget', "nothing")
+    activateOrDeactiveQue(inShowPictureCue, false)
+
+    fs.rm(path.join(__dirname, "inshowpic.jpg"), () => {})
 }
 
 
@@ -158,11 +175,11 @@ function activateOrDeactiveQue(cue, activate) {
     console.log("sending " + (activate ? 'go' : 'stop') + " to " + cue)
     oscPort.send({
         address: '/cue/' + cue + '/' + (activate ? 'go' : 'stop')
-    })
+    }, oscDestinationIP, oscDestinationPort)
 }
 
 function sendOscToQLab(cue, command, arg) {
-    console.log("Sending " + command + " to " + cue + " with " + arg)
+    console.log("Sending " + "/cue/" + cue + '/' + command + "SPACE" + arg)
     oscPort.send({
         address: '/cue/' + cue + '/' + command,
         args: [{
@@ -214,25 +231,41 @@ const server = http.createServer(function (req, res) {
             pict = Buffer.concat([pict, chunk])
         })
         let pictureName = uuid.randomUUID() + ".jpg"
-        req.on(('end'), () => sharp(pict).flip(true).flop(true).toFile(pictureName, console.log))
-        addPicturePreShow(path.join(__dirname, pictureName))
+        req.on(('end'), () => {
+            sharp(pict).flip(true).flop(true).toFile(pictureName, function (err, info) {
+                if(err) {
+                    console.error(err)
+                }
+                console.log(info)
+                addPicturePreShow(path.join("~/WebstormProjects/clickbait-server", pictureName))
+            })
+        })
     }
 
     if(req.url === '/postpicturein') {
-        activateOrDeactiveQue(inShowPictureCue, false)
-        setPictureInShow(path.join(__dirname, "resources/picturesinshow/inshowpic.jpg"))
-        fs.rm(path.join(__dirname, "resources/picturesinshow/inshowpic.jpg"), () => {})
+        deletePictureInShow()
         let pict = Buffer.alloc(0)
         req.on('data', function (chunk) {
             pict = Buffer.concat([pict, chunk])
         })
-        req.on(('end'), () => sharp(pict).flip(true).flop(true).toFile('inshowpic.jpg', console.log).then(() => activateOrDeactiveQue(inShowPictureCue, true)))
+        req.on(('end'), () => {
+            sharp(pict).flip(true).flop(true).toFile('inshowpic.jpg', function (err, info) {
+                if(err) {
+                    console.error(err)
+                }
+                console.log(info)
+                setPictureInShow(path.join(__dirname, "inshowpic.jpg"))
+                activateOrDeactiveQue(inShowPictureCue, true)
+            })
+        })
+
     }
 
     if (req.url === '/posttitle') {
         req.setEncoding('utf8')
         req.on('data', function (body) {
             sendOscToQLab(dynamicTitleCue, 'text', body)
+
         })
 
     }
