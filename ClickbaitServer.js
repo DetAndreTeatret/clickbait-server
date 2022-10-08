@@ -10,7 +10,7 @@ const oscDestinationPort = 53000
 
 const httpReceivePort = 1103
 
-const slideshowDelay = 10*1000 //Time between each new picture/title combination (in ms)
+const slideshowDelay = 5*1000 //Time between each new picture/title combination (in ms)
 
 let slideshowRunning = false
 
@@ -26,12 +26,12 @@ const preShowPictureCueOffset = 100
 const preShowTitleCueOffset = 200
 
 function initApp() {
-    console.log("Starting ClickbaitServer...")
+    console.log("Initializing ClickbaitServer...")
     //Check Qlab response for active?
     //Start background graphic
-    activateOrDeactiveQue(backgroundGraphicCue, true)
+    //activateOrDeactiveQue(backgroundGraphicCue, true)
     sendOscToQLab(dynamicTitleCue, "text", " ")
-    activateOrDeactiveQue(dynamicTitleCue, true)
+    //activateOrDeactiveQue(dynamicTitleCue, true)
     //Populate title queues and choices size
     populateTitleChoices()
 }
@@ -50,8 +50,8 @@ const oscPort = new osc.UDPPort({
 
 // Listen for incoming OSC messages.
 oscPort.on("message", function (oscMsg, timeTag, info) {
-    console.log("An OSC message just arrived!", oscMsg);
-    console.log("Remote info is: ", info);
+    console.log("OSC from QLab with address " + oscMsg["address"] + " received with status " + JSON.parse(oscMsg["args"][0]["value"])["status"].toUpperCase())
+    //console.log("Remote info is: ", info);
 });
 
 oscPort.on('error', console.error)
@@ -82,22 +82,33 @@ function calculateTitleCueOffset(titleNumber) {
 
 function addPicturePreShow (pictureFilePath) {
     for (let i = 0; i < pictureCuesOccupied.length; i++) {
-        if(pictureCuesOccupied[i]) continue
+        if(i !== 0 && !slideshowRunning){
+            startSlideshow()
+        }
+
+        if(pictureCuesOccupied[i]) {
+            continue
+        }
 
         pictureCuesOccupied[i] = true
         sendOscToQLab(calculatePictureCueOffset(i), "fileTarget", pictureFilePath)
         pictureChoices++
+
+        if(i === 0) {
+            activateOrDeactiveQue(calculatePictureCueOffset(i), true)
+        }
         return
     }
     console.error("Tried to add new picture to an empty que, but all ques are full!")
+    console.error(pictureCuesOccupied)
 }
 
 function deleteAllPicturesPreShow() {
-    console.log("Deleting all pre-show pictures")
+    console.log("Deleting all pre-show pictures!!!!")
 
     for (let i = 0; i < pictureCuesOccupied.length; i++) {
         pictureCuesOccupied[i] = false
-        sendOscToQLab(calculatePictureCueOffset(i), "fileTarget", "nothing")
+        //sendOscToQLab(calculatePictureCueOffset(i), "fileTarget", "nothing")
     }
 
     pictureChoices = 0
@@ -129,57 +140,74 @@ let usedTitles = []
 
 function startSlideshow() {
     if(slideshowRunning === true) {
+        console.log("Slideshow already running....")
         return;
     }
+
+    console.log("Starting slideshow....")
     slideshowRunning = true
-    populateTitleChoices().then(() => tickSlideshow)
+    tickSlideshow()
 }
 
 function stopSlideshow() {
+    console.log("Stopping slideshow....")
     slideshowRunning = false
 }
 
 async function tickSlideshow() {
-    if(!slideshowRunning) return;
-    //send
+    if(!slideshowRunning){
+        activateOrDeactiveQue(lastPictureQue, false)
+        if(lastTitleQue !== -1) activateOrDeactiveQue(lastTitleQue, false)
+        console.log("Slideshow stopped!")
+        return;
+    }
+    console.log("Ticking slideshow!")
+
 
     let pictureChoice = Math.floor(Math.random() * pictureChoices)
     while (usedPictures.includes(pictureChoice)) pictureChoice = Math.floor(Math.random() * pictureChoices)
 
-    let titleChoice = Math.floor(Math.random() * titleChoices)
-    while (usedTitles.includes(titleChoice)) titleChoice = Math.floor(Math.random() * titleChoices)
 
-    activateOrDeactiveQue(lastPictureQue, false)
+
+    activateOrDeactiveQue(lastPictureQue === -1 ? 101 : lastPictureQue, false)
     lastPictureQue = calculatePictureCueOffset(pictureChoice)
     activateOrDeactiveQue(lastPictureQue, true)
-
-    activateOrDeactiveQue(lastTitleQue, false)
-    lastTitleQue = calculateTitleCueOffset(titleChoice)
-    activateOrDeactiveQue(lastTitleQue, true)
 
     if(usedPictures.length === pictureChoices - 1) {
         usedPictures = []
     }
 
-    if(usedTitles.length === titleChoices - 1) {
-        usedTitles = []
+    if(titleChoices !== 0) {
+        let titleChoice = Math.floor(Math.random() * titleChoices)
+        while (usedTitles.includes(titleChoice)) titleChoice = Math.floor(Math.random() * titleChoices)
+
+        if(lastTitleQue !== -1) {
+            activateOrDeactiveQue(lastTitleQue, false)
+        }
+        lastTitleQue = calculateTitleCueOffset(titleChoice)
+        activateOrDeactiveQue(lastTitleQue, true)
+
+        if(usedTitles.length === titleChoices - 1) {
+            usedTitles = []
+        }
     }
 
-    setInterval(tickSlideshow, slideshowDelay)
+
+    setTimeout(tickSlideshow, slideshowDelay)
 }
 
 
 //QLAB UTIL
 
 function activateOrDeactiveQue(cue, activate) {
-    console.log("sending " + (activate ? 'go' : 'stop') + " to " + cue)
+    console.log("Sending /cue/" + cue + "/" + (activate ? 'go' : 'stop'))
     oscPort.send({
         address: '/cue/' + cue + '/' + (activate ? 'go' : 'stop')
     }, oscDestinationIP, oscDestinationPort)
 }
 
 function sendOscToQLab(cue, command, arg) {
-    console.log("Sending " + "/cue/" + cue + '/' + command + "SPACE" + arg)
+    console.log("Sending " + "/cue/" + cue + '/' + command + " " + arg)
     oscPort.send({
         address: '/cue/' + cue + '/' + command,
         args: [{
@@ -191,7 +219,7 @@ function sendOscToQLab(cue, command, arg) {
 
 
 async function populateTitleChoices() {
-    let dirpath = path.join(__dirname, "resources/titles")
+    let dirpath = path.join(__dirname, "/resources/titles")
     fs.readdir(dirpath, function (err, files) {
         if(err) {
             console.error("Unable to read directory with TITLES from pre show. " + err)
@@ -202,11 +230,14 @@ async function populateTitleChoices() {
             titlePaths.push(path.join(dirpath, file)) //TODO check that file is file name
         })
         titleChoices = titlePaths.length
-    })
 
-    for (let i = 0; i < titlePaths.length; i++) {
-        sendOscToQLab(calculateTitleCueOffset(i), "fileTarget", titlePaths[i])
-    }
+        console.log("Found " + titleChoices + " titles, adding them to QLab")
+        console.log(files)
+
+        for (let i = 0; i < titlePaths.length; i++) {
+            sendOscToQLab(calculateTitleCueOffset(i), "fileTarget", titlePaths[i])
+        }
+    })
 }
 
 
@@ -225,7 +256,6 @@ const server = http.createServer(function (req, res) {
     }
 
     if (req.url === '/postpicturepre') {
-        startSlideshow()
         let pict = Buffer.alloc(0)
         req.on('data', function (chunk) {
             pict = Buffer.concat([pict, chunk])
@@ -236,6 +266,7 @@ const server = http.createServer(function (req, res) {
                 if(err) {
                     console.error(err)
                 }
+                console.log("Image received for pre-show!")
                 console.log(info)
                 addPicturePreShow(path.join("~/WebstormProjects/clickbait-server", pictureName))
             })
@@ -253,6 +284,7 @@ const server = http.createServer(function (req, res) {
                 if(err) {
                     console.error(err)
                 }
+                console.log("Image received for in show!")
                 console.log(info)
                 setPictureInShow(path.join(__dirname, "inshowpic.jpg"))
                 activateOrDeactiveQue(inShowPictureCue, true)
